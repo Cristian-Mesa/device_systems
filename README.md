@@ -1,8 +1,8 @@
 # device_systems
 
-API REST desarrollada con FastAPI para la gestión del recurso usuarios. Este proyecto nació como reto integrador de Fundamentos de FastAPI y evolucionó en una segunda actividad, FastAPI Intermedio, ambas del programa ADSO en el SENA, Centro Tecnología y Manufactura Avanzada.
+API REST desarrollada con FastAPI para la gestión del recurso usuarios. Este proyecto nació como reto integrador de Fundamentos de FastAPI, evolucionó con un CRUD completo y manejo de errores en FastAPI Intermedio, y en esta tercera actividad incorpora persistencia real de datos mediante SQLAlchemy y una base de datos SQLite, dentro del programa ADSO en el SENA, Centro Tecnología y Manufactura Avanzada.
 
-La aplicación implementa un CRUD completo sobre usuarios: crear, listar, consultar por id, filtrar por rol y estado, actualizar completa o parcialmente, y eliminar. Incluye validaciones con Pydantic v2, manejo de errores con códigos HTTP correctos, reutilización de lógica mediante Dependency Injection, y documentación automática ampliada con Swagger UI y ReDoc.
+La aplicación ya no guarda los usuarios en una lista en memoria. Ahora cada usuario se crea, consulta, actualiza y elimina directamente sobre una base de datos, usando un modelo SQLAlchemy para la tabla y schemas Pydantic para validar lo que entra y sale de la API.
 
 Repositorio: https://github.com/Cristian-Mesa/device_systems
 
@@ -11,9 +11,10 @@ Repositorio: https://github.com/Cristian-Mesa/device_systems
 - Python
 - FastAPI
 - Uvicorn
+- SQLAlchemy
+- SQLite
 - Pydantic v2
 - Git y GitHub
-- Thunder Client, como cliente HTTP para las pruebas
 
 ## Estructura del proyecto
 
@@ -21,6 +22,10 @@ Repositorio: https://github.com/Cristian-Mesa/device_systems
 device_systems/
 ├── app/
 │   ├── main.py
+│   ├── database/
+│   │   └── connection.py
+│   ├── models/
+│   │   └── user_model.py
 │   ├── schemas/
 │   │   └── user_schema.py
 │   ├── routes/
@@ -28,22 +33,25 @@ device_systems/
 │   ├── services/
 │   │   └── user_service.py
 │   ├── dependencies/
-│   │   └── user_dependencies.py
+│   │   └── database_dependency.py
 │   └── data/
 │       └── users_db.py
+├── evidencias/
+├── device_systems.db
 ├── requirements.txt
 └── README.md
 ```
 
-El proyecto está organizado por capas, separando responsabilidades:
+El proyecto sigue organizado por capas, y ahora suma dos nuevas:
 
-- schemas: modelos Pydantic de entrada y salida, y sus validaciones
+- database: configura el motor de conexión, la sesión y la clase base de la que heredan los modelos
+- models: define la tabla de la base de datos mediante clases de SQLAlchemy
+- schemas: modelos Pydantic de entrada y salida de la API, y sus validaciones
 - routes: define los endpoints, recibe las peticiones y delega el trabajo real
-- services: contiene la lógica de negocio, sin nada de FastAPI involucrado
-- dependencies: funciones reutilizables inyectadas con Depends en varias rutas
-- data: simula la base de datos en memoria, una lista de usuarios que vive mientras el servidor está corriendo
+- services: contiene la lógica de negocio, ahora trabajando contra la base de datos a través de una sesión
+- dependencies: entrega la sesión de base de datos a cada endpoint que la necesita
 
-Esta separación permite que, si en el futuro se cambia de dónde vienen los datos, por ejemplo pasando a una base de datos real, solo haya que tocar services y data, sin modificar las rutas.
+Esta separación deja claro algo importante: el modelo SQLAlchemy describe cómo se guardan los datos en la base de datos, mientras que los schemas Pydantic describen cómo se ven esos datos cuando entran o salen de la API. Son dos representaciones distintas de lo mismo, y mantenerlas separadas evita mezclar la lógica de persistencia con la validación de la API.
 
 ## Instalación de dependencias
 
@@ -78,44 +86,59 @@ uvicorn main:app --reload
 
 El servidor queda disponible en `http://127.0.0.1:8000`
 
-Documentación interactiva de Swagger UI en `http://127.0.0.1:8000/docs`
+Documentación interactiva en `http://127.0.0.1:8000/docs`
 
-Documentación alternativa de ReDoc en `http://127.0.0.1:8000/redoc`
+Documentación alternativa en `http://127.0.0.1:8000/redoc`
+
+Al levantar el servidor por primera vez, FastAPI crea automáticamente el archivo `device_systems.db` en la raíz del proyecto si todavía no existe, junto con la tabla users, usando la instrucción Base.metadata.create_all definida en main.py.
+
+## Configuración de la base de datos
+
+La conexión vive en app/database/connection.py. Se usa SQLite como base de datos, definida con la ruta sqlite:///./device_systems.db. Ese archivo contiene el engine de conexión, la sesión SessionLocal que se abre y se cierra en cada petición, y la clase Base de la que hereda el modelo de usuario.
+
+La sesión se entrega a cada endpoint mediante una dependencia definida en app/dependencies/database_dependency.py, la función get_db, que abre una sesión, la deja disponible durante la petición y la cierra al terminar, sin importar si la operación fue exitosa o falló.
 
 ## Modelo de usuario
 
-Campos: id, name, email, role, is_active
+El modelo SQLAlchemy, en app/models/user_model.py, representa la tabla users con los siguientes campos y restricciones:
 
-Validaciones:
-- name: mínimo 3 caracteres
-- email: formato válido, mediante EmailStr
-- role: solo admin, support o user
-- is_active: booleano
+| Campo | Tipo | Restricción |
+|---|---|---|
+| id | Integer | llave primaria |
+| name | String | obligatorio |
+| email | String | único y obligatorio |
+| role | String | obligatorio |
+| is_active | Boolean | por defecto true |
+| created_at | DateTime | se genera automáticamente al crear el registro |
 
-Para separar lo que el cliente puede enviar de lo que el servidor genera o exige, se definieron cuatro modelos: UserBase con los campos comunes, UserCreate que hereda de UserBase y se usa como cuerpo del POST y del PUT sin id, User que hereda de UserBase y agrega el id, usado para representar un usuario ya existente, y UserUpdate con todos los campos opcionales, usado como cuerpo del PATCH para permitir actualizaciones parciales.
+Estas restricciones se aplican a nivel de base de datos, además de las validaciones que ya hace Pydantic antes de que el dato llegue hasta ahí.
 
-## Autenticación simulada
+## Schemas Pydantic
 
-Las operaciones que modifican datos, POST, PUT, PATCH y DELETE, requieren una cabecera personalizada:
+En app/schemas/user_schema.py se definieron cuatro schemas, cada uno pensado para un momento distinto:
 
-```
-X-API-Key: device_systems_key
-```
+- UserCreate: se usa como cuerpo del POST, con todos los campos obligatorios menos el id y la fecha de creación, que los genera la base de datos
+- UserUpdate: se usa como cuerpo del PUT, exige todos los campos igual que UserCreate porque una actualización completa reemplaza todo el usuario
+- Userpatch: se usa como cuerpo del PATCH, con todos los campos opcionales para permitir enviar solo lo que se quiere cambiar
+- UserResponse: se usa para dar forma a lo que la API devuelve, incluye id y created_at, y tiene activado from_attributes para poder construirse directamente a partir del modelo SQLAlchemy
 
-Si no se envía o el valor no coincide, la API responde 401. Las operaciones de solo lectura, GET, no requieren esta cabecera. Esta es una simulación simple de autenticación, no un mecanismo de seguridad real, implementada como ejercicio de Dependency Injection.
+Validaciones mínimas:
+
+- name: obligatorio, mínimo 3 caracteres
+- email: formato válido mediante EmailStr
+- role: solo puede ser admin, support o user, controlado con un Enum
+- is_active: booleano, con valor por defecto true
 
 ## Tabla de endpoints
 
-| Método | Ruta | Descripción | Código exitoso | Requiere X-API-Key |
-|---|---|---|---|---|
-| GET | /users | Lista usuarios, admite filtros por role e is_active | 200 | No |
-| GET | /users/{user_id} | Consulta un usuario por su id | 200 | No |
-| POST | /users | Crea un usuario nuevo | 201 | Sí |
-| PUT | /users/{user_id} | Reemplaza todos los campos de un usuario existente | 200 | Sí |
-| PATCH | /users/{user_id} | Actualiza solo los campos enviados | 200 | Sí |
-| DELETE | /users/{user_id} | Elimina un usuario existente | 200 | Sí |
-
-Todas las respuestas incluyen las cabeceras personalizadas X-App-Name con valor device_systems y X-API-Version con valor 1.0
+| Método | Ruta | Descripción | Código exitoso |
+|---|---|---|---|
+| GET | /users | Lista usuarios, admite filtros por role e is_active, y ordenamiento por name o created_at | 200 |
+| GET | /users/{usuario_id} | Consulta un usuario por su id | 200 |
+| POST | /users | Crea un usuario nuevo en la base de datos | 201 |
+| PUT | /users/{usuario_id} | Reemplaza todos los campos de un usuario existente | 200 |
+| PATCH | /users/{usuario_id} | Actualiza solo los campos enviados | 200 |
+| DELETE | /users/{usuario_id} | Elimina un usuario existente de la base de datos | 204 |
 
 ## Ejemplos de peticiones
 
@@ -130,21 +153,30 @@ Respuesta 200 OK
 ```json
 [
   {
-    "email": "ana@example.com",
-    "name": "Ana Torres",
+    "name": "cristian",
+    "email": "user@example.com",
     "role": "admin",
     "is_active": true,
-    "id": 1
+    "id": 2,
+    "created_at": "2026-09-11T00:25:45.415641"
+  },
+  {
+    "name": "messi",
+    "email": "lapulga@example.com",
+    "role": "admin",
+    "is_active": true,
+    "id": 1,
+    "created_at": "2026-09-10T23:44:12.313301"
   }
 ]
 ```
 
 Filtros disponibles: `GET /users?role=admin` y `GET /users?is_active=true`
 
-### GET /users/{user_id}
+### GET /users/{usuario_id}
 
 ```
-GET http://127.0.0.1:8000/users/1
+GET http://127.0.0.1:8000/users/3
 ```
 
 Si el id no existe, la API responde 404
@@ -160,42 +192,47 @@ Si el id no existe, la API responde 404
 ```
 POST http://127.0.0.1:8000/users
 Content-Type: application/json
-X-API-Key: device_systems_key
 
 {
-  "email": "laura@example.com",
-  "name": "Laura Gómez",
-  "role": "user",
+  "name": "cristian",
+  "email": "user@example.com",
+  "role": "admin",
   "is_active": true
 }
 ```
 
-Respuesta 201 Created, con el id generado por el servidor
+Respuesta 201 Created, con el id y la fecha de creación generados por la base de datos
 
 ```json
 {
-  "email": "laura@example.com",
-  "name": "Laura Gómez",
-  "role": "user",
+  "name": "cristian",
+  "email": "user@example.com",
+  "role": "admin",
   "is_active": true,
-  "id": 5
+  "id": 2,
+  "created_at": "2026-09-11T00:25:45.415641"
 }
 ```
 
 Si el correo ya está registrado, la API responde 400.
 
-### PUT /users/{user_id}
+```json
+{
+  "detail": "El email ya está registrado"
+}
+```
 
-Reemplaza todos los campos del usuario. Requiere enviarlos todos.
+### PUT /users/{usuario_id}
+
+Reemplaza todos los campos del usuario, exige enviarlos todos.
 
 ```
 PUT http://127.0.0.1:8000/users/2
 Content-Type: application/json
-X-API-Key: device_systems_key
 
 {
+  "name": "labuenaprofe",
   "email": "user@example.com",
-  "name": "Ana Torres",
   "role": "admin",
   "is_active": true
 }
@@ -203,74 +240,41 @@ X-API-Key: device_systems_key
 
 Respuesta 200 OK con el usuario actualizado. Si falta algún campo obligatorio, responde 422. Si el correo ya pertenece a otro usuario, responde 400.
 
-### PATCH /users/{user_id}
+### PATCH /users/{usuario_id}
 
 Actualiza solo los campos enviados.
 
 ```
-PATCH http://127.0.0.1:8000/users/1
+PATCH http://127.0.0.1:8000/users/2
 Content-Type: application/json
-X-API-Key: device_systems_key
 
 {
-  "email": "nuevo_correo@example.com"
+  "email": "elmejorestudiante@example.com"
 }
 ```
 
-Respuesta 200 OK con el usuario actualizado. Si no se envía ningún campo, responde 400. Si el nuevo correo ya pertenece a otro usuario, responde 400.
-
-### DELETE /users/{user_id}
-
-```
-DELETE http://127.0.0.1:8000/users/3
-X-API-Key: device_systems_key
-```
-
-Respuesta 200 OK
+Respuesta 200 OK con el usuario actualizado
 
 ```json
 {
-  "detail": "Usuario eliminado correctamente"
+  "name": "labuenaprofe",
+  "email": "elmejorestudiante@example.com",
+  "role": "admin",
+  "is_active": true,
+  "id": 2,
+  "created_at": "2026-09-11T00:25:45.415641"
 }
 ```
 
-Si el usuario no existe, responde 404.
+Si el nuevo correo ya pertenece a otro usuario, responde 400.
 
-## Códigos de estado usados
+### DELETE /users/{usuario_id}
 
-| Código | Cuándo se usa |
-|---|---|
-| 200 | Listar, consultar, actualizar completo, actualizar parcial y eliminar exitosos |
-| 201 | Creación exitosa de un usuario |
-| 400 | Correo duplicado, o PATCH sin ningún campo enviado |
-| 401 | Falta la cabecera X-API-Key o su valor es incorrecto, en operaciones de escritura |
-| 404 | El usuario consultado, actualizado o eliminado no existe |
-| 422 | Los datos enviados no cumplen las validaciones de Pydantic |
+```
+DELETE http://127.0.0.1:8000/users/1
+```
 
-## Dependency Injection con Depends
-
-En app/dependencies/user_dependencies.py se definieron cinco dependencias reutilizables:
-
-- get_user_or_404: busca un usuario por su id y lanza 404 si no existe. La usan las rutas de consulta, actualización y eliminación, evitando repetir esa búsqueda en cada una.
-- validar_correo_no_duplicado: revisa que el correo del body no exista ya en el sistema, usada en el POST.
-- validar_correo_no_duplicado_en_actualizacion: depende a su vez de get_user_or_404, y valida el correo excluyendo al propio usuario que se está actualizando, usada en el PUT.
-- validar_rol_permitido: deja explícita la validación del rol recibido como filtro.
-- obtener_configuracion_api: devuelve el nombre y versión de la aplicación. La usa agregar_cabeceras_app, otra dependencia que depende de esta para escribir las cabeceras personalizadas en cada respuesta, sin repetir esos valores en cada ruta.
-- verificar_token_simulado: revisa la cabecera X-API-Key, aplicada únicamente a las rutas que modifican datos.
-
-Gracias a esto, las rutas quedaron delgadas: reciben la petición, dejan que las dependencias resuelvan la validación y la búsqueda, y delegan la lógica de negocio al servicio correspondiente.
-
-## Manejo de errores
-
-Todos los errores se manejan lanzando HTTPException con el código y el detalle correspondiente, cubriendo los casos pedidos:
-
-- Usuario no encontrado, en cualquier operación por id
-- Correo electrónico duplicado, al crear o actualizar
-- Rol no permitido, validado tanto en el cuerpo de las peticiones como en el filtro de búsqueda
-- Intento de actualización sin datos, en el PATCH
-- Eliminación de un usuario inexistente
-
-El formato de respuesta de error es el estándar que entrega FastAPI, por ejemplo:
+Respuesta 204 No Content, sin cuerpo en la respuesta. Si se intenta eliminar de nuevo el mismo id, responde 404.
 
 ```json
 {
@@ -278,82 +282,100 @@ El formato de respuesta de error es el estándar que entrega FastAPI, por ejempl
 }
 ```
 
-## Capturas de Swagger UI
+## Códigos de estado usados
 
-![Swagger UI actualizado](evidencias/10-swagger-ui-actualizado.png)
+| Código | Cuándo se usa |
+|---|---|
+| 200 | Listar, consultar, actualizar completo y actualizar parcial exitosos |
+| 201 | Creación exitosa de un usuario |
+| 204 | Eliminación exitosa de un usuario |
+| 400 | Correo duplicado al crear o actualizar |
+| 404 | El usuario consultado, actualizado o eliminado no existe |
+| 422 | Los datos enviados no cumplen las validaciones de Pydantic |
 
-## Capturas de ReDoc
+## Manejo de errores
 
-![ReDoc](evidencias/11-redoc.png)
+Todos los errores se manejan lanzando HTTPException con el código y el detalle correspondiente, cubriendo:
+
+- Usuario no encontrado, en cualquier operación por id
+- Correo electrónico duplicado, al crear o al actualizar, incluso si el correo pertenece a otro usuario distinto al que se está modificando
+- Datos inválidos, rechazados automáticamente por las validaciones de Pydantic antes de llegar a la base de datos
+- Rol no permitido, controlado por el Enum del schema
+
+## Diferencia entre modelo SQLAlchemy y schema Pydantic
+
+El modelo, en app/models/user_model.py, describe la tabla real de la base de datos: sus columnas, sus tipos, y restricciones como unique o nullable. Es lo que SQLAlchemy usa para traducir código Python en sentencias SQL.
+
+El schema, en app/schemas/user_schema.py, describe la forma de los datos que la API recibe o entrega, y no tiene relación directa con cómo se guardan. Por ejemplo, el schema puede exigir que un email tenga un formato válido antes de intentar guardarlo, algo que la base de datos por sí sola no verifica. Tener ambos separados permite cambiar la forma en que la API valida los datos sin tocar la tabla, o cambiar la estructura de la tabla sin romper la validación de entrada.
+
+## Capturas del proyecto
+
+Estructura del proyecto con las nuevas carpetas database y models, y el archivo device_systems.db ya generado en la raíz.
+
+![Estructura del proyecto](evidencias/01-estructura-proyecto.png)
+
+Documentación automática mostrando los 6 endpoints del recurso users.
+
+![Documentación de la API](evidencias/02-documentacion-api-endpoints.png)
 
 ## Evidencias de pruebas
 
+### POST /users
+
+Creación de un usuario válido, respondiendo 201 con el id y la fecha de creación asignados por la base de datos.
+
+![POST usuario creado](evidencias/03-post-usuario-creado.png)
+
+Intento de creación con un correo ya registrado, respondiendo 400.
+
+![POST correo duplicado](evidencias/04-post-correo-duplicado.png)
+
 ### GET /users
 
-Listado completo, sin filtros.
+Listado completo de usuarios guardados en la base de datos.
 
-![GET /users](evidencias/02-get-users-lista.png)
+![GET usuarios lista](evidencias/05-get-users-lista.png)
 
-Consulta por id, con un id existente.
+### GET /users/{usuario_id}
 
-![GET /users por id](evidencias/03-get-user-por-id.png)
+Consulta de un usuario existente por su id.
+
+![GET usuario por id](evidencias/06-get-user-por-id.png)
+
+Consulta de un id que no existe, respondiendo 404.
+
+![GET usuario 404](evidencias/07-get-user-404.png)
 
 Filtro por rol usando query parameter.
 
-![GET /users filtro role](evidencias/05-get-users-filtro-role.png)
+![GET usuarios filtro rol](evidencias/08-get-users-filtro-role.png)
 
-### GET /users/{user_id}
+Filtro por estado activo usando query parameter.
 
-Consulta con un id que no existe, respondiendo 404.
+![GET usuarios filtro activos](evidencias/09-get-users-filtro-activos.png)
 
-![GET /users/id no encontrado](evidencias/04-get-user-404.png)
+### PUT /users/{usuario_id}
 
-### POST /users
+Actualización completa de un usuario existente.
 
-Creación de un usuario válido, respondiendo con el id generado.
+![PUT usuario actualizado](evidencias/10-put-usuario-actualizado.png)
 
-![POST /users creado](evidencias/06-post-usuario-creado.png)
+### PATCH /users/{usuario_id}
 
-### PUT /users/{user_id}
+Actualización parcial, cambiando solo el correo del usuario.
 
-Intento con campos faltantes, respondiendo 422.
+![PATCH usuario actualizado](evidencias/11-patch-usuario-actualizado.png)
 
-![PUT validación fallida](evidencias/12-put-validacion-fallida.png)
+### DELETE /users/{usuario_id}
 
-Actualización completa exitosa.
+Eliminación exitosa de un usuario, respondiendo 204 sin contenido.
 
-![PUT usuario actualizado](evidencias/13-put-usuario-actualizado.png)
+![DELETE usuario](evidencias/12-delete-usuario.png)
 
-### PATCH /users/{user_id}
+Intento de eliminar el mismo usuario una segunda vez, respondiendo 404.
 
-Actualización parcial exitosa, cambiando solo un campo.
-
-![PATCH usuario actualizado](evidencias/14-patch-usuario-actualizado.png)
-
-### DELETE /users/{user_id}
-
-Eliminación exitosa, enviando la cabecera X-API-Key.
-
-![DELETE usuario con token](evidencias/16-delete-usuario-con-token.png)
-
-### Evidencia de validaciones y errores
-
-Correo ya existente al crear, respondiendo 400.
-
-![POST correo duplicado](evidencias/07-post-correo-duplicado.png)
-
-Datos que no cumplen las validaciones de Pydantic al crear, respondiendo 422.
-
-![POST validación fallida](evidencias/08-post-validacion-fallida.png)
-
-Correo ya existente al actualizar parcialmente, respondiendo 400.
-
-![PATCH correo duplicado](evidencias/15-patch-correo-duplicado.png)
-
-Cabeceras personalizadas X-App-Name y X-API-Version presentes en la respuesta.
-
-![Cabeceras HTTP](evidencias/09-cabeceras-http.png)
+![DELETE usuario 404](evidencias/13-delete-usuario-404.png)
 
 ## Reflexión final
 
-Evolucionar device_systems de un CRUD básico a una API más completa permitió entender por qué los proyectos reales se organizan en capas separadas: cuando la lógica de negocio vive en services y no mezclada con las rutas, agregar PUT, PATCH y DELETE fue mucho más ordenado que si todo hubiera seguido junto en un solo archivo. Trabajar con PATCH exigió pensar con cuidado la diferencia entre un campo que no se envía y uno que se envía vacío, algo que exclude_unset resuelve de forma elegante. Dependency Injection cambió la forma de ver las rutas: en vez de repetir validaciones y búsquedas en cada endpoint, esas responsabilidades se trasladan a funciones que FastAPI ejecuta automáticamente antes de la ruta, incluso permitiendo que una dependencia dependa de otra, como ocurre entre la configuración de la API y las cabeceras, o entre la búsqueda del usuario y la validación del correo al actualizar. Ajustar los códigos de estado según el estándar HTTP, distinguiendo 200 de 201, o revisando en qué casos corresponde 400 en vez de 409, dejó más claro que cada código comunica algo específico sobre lo que pasó con la petición, y que documentarlo bien en Swagger y ReDoc hace que la API sea entendible para cualquiera que la consuma sin tener que leer el código fuente.
+Pasar de una lista en memoria a una base de datos real cambió la forma de pensar el proyecto. Antes, reiniciar el servidor borraba todos los usuarios porque la lista vivía solo mientras el proceso estuviera corriendo, algo que no tiene sentido en una aplicación real. Ahora los datos sobreviven a reinicios del servidor porque quedan guardados en device_systems.db, y eso obligó a separar con más cuidado qué responsabilidad tiene cada capa: el modelo describe la tabla, el schema describe lo que viaja por la API, y el servicio es el único lugar que sabe cómo usar la sesión de base de datos para leer y escribir. Configurar SQLAlchemy dejó claro que el ORM no reemplaza SQL, lo traduce, y que entender ese puente ayuda a razonar mejor los errores cuando algo falla, por ejemplo un intento de guardar un correo duplicado que la base de datos rechaza por la restricción unique antes de que el código llegue a manejarlo manualmente. En general, esta actividad mostró por qué la persistencia real es uno de los pilares de cualquier API que se vaya a usar en producción, y por qué separar el modelo de datos de los schemas de validación es una decisión de diseño y no un simple detalle de organización de carpetas.
