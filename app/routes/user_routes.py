@@ -91,9 +91,10 @@ from sqlalchemy.orm import Session
 
 from app.dependencies.database_dependency import get_db
 from app.schemas.user_schema import UserCreate, UserUpdate, Userpatch, UserResponse
-from app.services import user_service
+from app.schemas.loan_schema import LoanDetailResponse
+from app.services import loan_service, user_service
 
-router = APIRouter(prefix="/users", tags=["Usuarios"])
+router = APIRouter(prefix="/users", tags=["Users"])
 
 # 1. LISTAR USUARIOS (con filtros y ordenamiento)
 @router.get("", response_model=List[UserResponse], status_code=status.HTTP_200_OK)
@@ -175,5 +176,20 @@ def eliminar_usuario(usuario_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND, 
             detail="Usuario no encontrado"
         )
+    if loan_service.list_loans_for_user(db, usuario_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No se puede eliminar un usuario con prestamos registrados",
+        )
     user_service.eliminar_usuario(db, usuario)
     return None
+
+@router.get("/{usuario_id}/loans", response_model=List[LoanDetailResponse], summary="Prestamos de un usuario")
+def obtener_prestamos_usuario(usuario_id: int, db: Session = Depends(get_db)):
+    usuario = user_service.obtener_usuario_por_id(db, usuario_id)
+    if not usuario:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado",
+        )
+    return loan_service.list_loans_for_user(db, usuario_id)

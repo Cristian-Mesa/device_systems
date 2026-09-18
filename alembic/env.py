@@ -1,7 +1,9 @@
 import os
 import sys 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from app.database.connection import Base
+from app.database.connection import Base, DATABASE_URL
+from app.models import device_model, loan_model, user_model  # noqa: F401
+
 from dotenv import load_dotenv
 from logging.config import fileConfig
 
@@ -15,6 +17,7 @@ load_dotenv()
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -33,7 +36,7 @@ target_metadata = Base.metadata
 # ... etc.
 
 def get_url():
-    return os.getenv("DATABASE_URL", "sqlite:///./device_systems.db")
+    return DATABASE_URL
 
 
 def run_migrations_offline() -> None:
