@@ -1,9 +1,11 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.dependencies.database_dependency import get_db
+from app.rate_limit import limiter
+from app.dependencies.auth_dependency import get_current_active_user, require_admin_or_support
 from app.schemas.loan_schema import LoanCreate, LoanDetailResponse, LoanResponse
 from app.services import device_service, loan_service, user_service
 
@@ -22,7 +24,7 @@ def list_loans(
 
 
 @router.get("/details", response_model=list[LoanDetailResponse], summary="Consultar detalle de prestamos")
-def loan_details(db: Session = Depends(get_db)):
+def loan_details(db: Session = Depends(get_db), _current_user=Depends(require_admin_or_support)):
     return loan_service.list_loans(db)
 
 
@@ -34,8 +36,9 @@ def get_loan(loan_id: int, db: Session = Depends(get_db)):
     return loan
 
 
-@router.post("", response_model=LoanResponse, status_code=status.HTTP_201_CREATED, summary="Registrar prestamo")
-def create_loan(loan_data: LoanCreate, db: Session = Depends(get_db)):
+@router.post('', response_model=LoanResponse, status_code=status.HTTP_201_CREATED, summary='Registrar prestamo')
+@limiter.limit('10/minute')
+def create_loan(request: Request, loan_data: LoanCreate, db: Session = Depends(get_db), _current_user=Depends(get_current_active_user)):
     user = user_service.obtener_usuario_por_id(db, loan_data.user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
@@ -50,7 +53,7 @@ def create_loan(loan_data: LoanCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/{loan_id}/return", response_model=LoanResponse, summary="Devolver dispositivo")
-def return_loan(loan_id: int, db: Session = Depends(get_db)):
+def return_loan(loan_id: int, db: Session = Depends(get_db), _current_user=Depends(require_admin_or_support)):
     loan = loan_service.get_loan_by_id(db, loan_id)
     if not loan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pr?stamo no encontrado")

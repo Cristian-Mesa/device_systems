@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.dependencies.database_dependency import get_db
+from app.dependencies.auth_dependency import require_admin, require_admin_or_support
 from app.schemas.device_schema import DeviceCreate, DevicePatch, DeviceResponse, DeviceUpdate
 from app.schemas.loan_schema import LoanDetailResponse
 from app.services import device_service, loan_service
@@ -32,14 +33,14 @@ def get_device(device_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED, summary="Crear dispositivo")
-def create_device(device_data: DeviceCreate, db: Session = Depends(get_db)):
+def create_device(device_data: DeviceCreate, db: Session = Depends(get_db), _current_user=Depends(require_admin_or_support)):
     if device_service.get_device_by_serial_number(db, device_data.serial_number):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El numero de serie ya esta registrado")
     return device_service.create_device(db, device_data)
 
 
 @router.put("/{device_id}", response_model=DeviceResponse, summary="Actualizar dispositivo completo")
-def update_device(device_id: int, device_data: DeviceUpdate, db: Session = Depends(get_db)):
+def update_device(device_id: int, device_data: DeviceUpdate, db: Session = Depends(get_db), _current_user=Depends(require_admin_or_support)):
     device = device_service.get_device_by_id(db, device_id)
     if not device:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dispositivo no encontrado")
@@ -51,7 +52,7 @@ def update_device(device_id: int, device_data: DeviceUpdate, db: Session = Depen
 
 
 @router.patch("/{device_id}", response_model=DeviceResponse, summary="Actualizar dispositivo parcialmente")
-def patch_device(device_id: int, device_data: DevicePatch, db: Session = Depends(get_db)):
+def patch_device(device_id: int, device_data: DevicePatch, db: Session = Depends(get_db), _current_user=Depends(require_admin_or_support)):
     device = device_service.get_device_by_id(db, device_id)
     if not device:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dispositivo no encontrado")
@@ -64,7 +65,7 @@ def patch_device(device_id: int, device_data: DevicePatch, db: Session = Depends
 
 
 @router.delete("/{device_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Eliminar dispositivo")
-def delete_device(device_id: int, db: Session = Depends(get_db)):
+def delete_device(device_id: int, db: Session = Depends(get_db), _current_user=Depends(require_admin)):
     device = device_service.get_device_by_id(db, device_id)
     if not device:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dispositivo no encontrado")

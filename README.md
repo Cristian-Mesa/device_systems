@@ -1,39 +1,17 @@
-﻿# device_systems
+# device_systems
 
 API REST hecha con FastAPI para administrar usuarios, dispositivos y prestamos.
 
-En esta version el proyecto usa SQLAlchemy, SQLite y Alembic. Un usuario puede
-recibir dispositivos por medio de prestamos, y cada prestamo queda guardado en
-el historial.
+En esta version se agrego seguridad: registro, inicio de sesion, token JWT,
+roles, CORS, middleware y limite de peticiones.
 
-## Tecnologias
+## Que puede hacer la API
 
-- Python
-- FastAPI
-- SQLAlchemy
-- SQLite
-- Alembic
-- Pydantic v2
-- Uvicorn
-- Git y GitHub
-
-## Estructura
-
-```text
-device_systems/
-|-- app/
-|   |-- database/
-|   |-- models/
-|   |-- schemas/
-|   |-- routes/
-|   `-- services/
-|-- alembic/
-|   `-- versions/
-|-- evidencias/
-|-- alembic.ini
-|-- requirements.txt
-`-- README.md
-```
+- Crear y consultar usuarios.
+- Crear, actualizar y consultar dispositivos.
+- Registrar prestamos y devoluciones.
+- Registrar usuarios con una contrasena segura.
+- Iniciar sesion y usar un token para las rutas privadas.
 
 ## Instalacion
 
@@ -43,37 +21,82 @@ cd device_systems
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
+
+En el archivo `.env` se debe colocar una clave secreta propia en `SECRET_KEY`.
 
 ## Ejecutar el proyecto
 
-Primero se crean o actualizan las tablas con Alembic:
+Primero se actualiza la base de datos:
 
 ```powershell
 alembic upgrade head
 ```
 
-Luego se inicia la API desde la raiz del proyecto:
+Luego se inicia la API:
 
 ```powershell
 uvicorn app.main:app --reload
 ```
 
-La documentacion se puede abrir en:
+La documentacion se abre en:
 
 - `http://127.0.0.1:8000/docs`
 - `http://127.0.0.1:8000/redoc`
 
-## Migraciones con Alembic
+## Seguridad
 
-Alembic guarda los cambios de la base de datos en archivos de migracion. La
-migracion inicial crea estas tablas:
+### Registro e inicio de sesion
+
+- `POST /auth/register` crea una cuenta. La contrasena debe tener minimo 8 caracteres, una mayuscula, una minuscula y un numero. No puede tener espacios.
+- `POST /auth/login` recibe el correo en el campo `username` y la contrasena en `password`.
+- `GET /auth/me` muestra los datos del usuario que envio un token valido.
+
+La contrasena no se guarda como texto normal. Se guarda un hash, que es una version protegida de la contrasena.
+
+El token dura 30 minutos. Cuando vence, se debe iniciar sesion otra vez para recibir uno nuevo.
+
+En Swagger se puede usar el boton **Authorize**: se escribe el correo en `username`, la contrasena y Swagger envia el token en las rutas protegidas.
+
+### Roles
+
+- Un usuario autenticado puede consultar usuarios y registrar prestamos.
+- `admin` y `support` pueden crear o editar dispositivos, devolver prestamos y consultar detalles de prestamos.
+- Solo `admin` puede eliminar dispositivos.
+
+Sin token, o con un token invalido, la API responde `401`. Si el token es valido pero el rol no tiene permiso, responde `403`.
+
+## CORS, middleware y limites
+
+CORS permite que los frontends locales `http://localhost:5173` y `http://localhost:3000` usen la API. No se usa `*` como origen porque con credenciales seria menos seguro permitir cualquier pagina.
+
+Cada respuesta incluye estas cabeceras:
+
+- `X-App-Name`: identifica la aplicacion.
+- `X-Process-Time`: muestra cuanto tardo la peticion.
+- `X-Request-ID`: identifica la peticion para encontrarla en los registros.
+
+Tambien hay limites para evitar muchos intentos seguidos desde la misma direccion:
+
+- Registro: 3 por minuto.
+- Login: 5 por minuto.
+- Listado de usuarios: 30 por minuto.
+- Creacion de prestamos: 10 por minuto.
+
+Cuando se supera un limite, la respuesta es `429 Too Many Requests`.
+
+## Alembic
+
+Alembic guarda los cambios de la base de datos. Las tablas principales son:
 
 - `users`
 - `devices`
 - `loans`
 
-Comandos usados:
+Tambien agrega el campo `hashed_password` para los usuarios nuevos.
+
+Comandos utiles:
 
 ```powershell
 alembic current
@@ -81,22 +104,13 @@ alembic history
 alembic upgrade head
 ```
 
-Para un cambio futuro en los modelos se puede crear otra migracion con:
-
-```powershell
-alembic revision --autogenerate -m "descripcion del cambio"
-alembic upgrade head
-```
-
-## Modelos y relaciones
-
-- Un `User` puede tener varios prestamos.
-- Un `Device` puede aparecer en varios prestamos del historial.
-- Un `Loan` une un usuario con un dispositivo.
-- Cuando se presta un dispositivo, queda como no disponible.
-- Cuando se devuelve, vuelve a estar disponible.
-
 ## Endpoints principales
+
+### Auth
+
+- `POST /auth/register`
+- `POST /auth/login`
+- `GET /auth/me`
 
 ### Usuarios
 
@@ -118,8 +132,6 @@ alembic upgrade head
 - `DELETE /devices/{device_id}`
 - `GET /devices/{device_id}/loans`
 
-Filtros disponibles: `device_type`, `is_available`, `brand` y `search`.
-
 ### Prestamos
 
 - `GET /loans`
@@ -128,53 +140,47 @@ Filtros disponibles: `device_type`, `is_available`, `brand` y `search`.
 - `POST /loans`
 - `PATCH /loans/{loan_id}/return`
 
-Filtros disponibles: `status`, `user_email` y `device_type`.
-
 ## Reglas importantes
 
-- No se puede prestar un dispositivo que ya esta ocupado.
-- Un prestamo debe tener un usuario y un dispositivo existentes.
 - Un numero de serie no se puede repetir.
-- Al devolver un dispositivo, el prestamo pasa a `returned`.
+- No se puede prestar un dispositivo que no este disponible.
+- Al devolverlo, el dispositivo vuelve a estar disponible.
 - No se puede borrar un usuario o dispositivo que tenga prestamos registrados.
 
 ## Evidencias
 
-### Alembic y Swagger
+### Estructura y migracion
 
-![Estado e historial de Alembic](evidencias/14-alembic-current-history.png)
+![Estructura actualizada del proyecto](evidencias/29-estructura-seguridad.png)
+
+![Migracion de autenticacion aplicada](evidencias/30-alembic-auth-head.png)
+
+### Seguridad y autenticacion
+
+![Registro de usuario](evidencias/31-auth-register.png)
+
+![Login con token JWT](evidencias/32-auth-login-token.png)
+
+![Usuario autenticado en auth me](evidencias/33-auth-me.png)
+
+![Acceso sin token](evidencias/34-access-without-token.png)
+
+![Acceso rechazado por rol](evidencias/35-role-not-allowed.png)
+
+![Swagger con OAuth2](evidencias/36-swagger-oauth2.png)
+
+![Rate limiting activo](evidencias/37-rate-limit-429.png)
+
+### Actividad anterior
 
 ![Tablas de SQLite](evidencias/15-tablas-sqlite.png)
 
-![Swagger con Users, Devices y Loans](evidencias/16-swagger-recursos.png)
-
-### Usuarios, dispositivos y prestamos
-
-![Usuario creado](evidencias/17-post-user.png)
-
-![Dispositivo creado](evidencias/18-post-device.png)
-
 ![Prestamo creado](evidencias/19-post-loan.png)
-
-![Dispositivo no disponible](evidencias/20-loan-device-unavailable.png)
-
-![Detalle del prestamo con usuario y dispositivo](evidencias/22-loans-details.png)
-
-![Filtro de prestamos por estado](evidencias/23-loans-filter-status.png)
-
-![Filtro de prestamos por tipo de dispositivo](evidencias/24-loans-filter-device-type.png)
-
-![Prestamos de un usuario](evidencias/25-user-loans.png)
 
 ![Devolucion del dispositivo](evidencias/26-return-loan.png)
 
-![Dispositivo disponible despues de devolverlo](evidencias/27-device-available-after-return.png)
-
-![Historial de prestamos del dispositivo](evidencias/28-device-loan-history.png)
-
 ## Reflexion
 
-Con esta actividad aprendi que Alembic ayuda a mantener organizada la base de
-datos cuando el proyecto va creciendo. Tambien entendi como relacionar tablas
-con claves foraneas y como consultar informacion de usuarios, dispositivos y
-prestamos en una sola respuesta.
+Aprendi que una API no solo debe funcionar: tambien debe cuidar las contrasenas,
+controlar quien puede hacer cada accion y evitar peticiones repetidas. Con estas
+medidas, el proyecto queda mas organizado y mas seguro para usar desde un frontend.
