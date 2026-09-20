@@ -86,10 +86,12 @@
 #     return user_service.eliminar_usuario(usuario["id"])
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies.database_dependency import get_db
+from app.rate_limit import limiter
+from app.dependencies.auth_dependency import get_current_active_user
 from app.schemas.user_schema import UserCreate, UserUpdate, Userpatch, UserResponse
 from app.schemas.loan_schema import LoanDetailResponse
 from app.services import loan_service, user_service
@@ -97,18 +99,20 @@ from app.services import loan_service, user_service
 router = APIRouter(prefix="/users", tags=["Users"])
 
 # 1. LISTAR USUARIOS (con filtros y ordenamiento)
-@router.get("", response_model=List[UserResponse], status_code=status.HTTP_200_OK)
-def listar_usuarios(
+@router.get('', response_model=List[UserResponse], status_code=status.HTTP_200_OK)
+@limiter.limit('30/minute')
+def listar_usuarios(request: Request,
     role: Optional[str] = Query(None, description="Filtrar por rol (admin, support, user)"),
     is_active: Optional[bool] = Query(None, description="Filtrar por estado activo/inactivo"),
     order_by: Optional[str] = Query("created_at", description="Ordenar por 'name' o 'created_at'"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_active_user),
 ):
     return user_service.listar_usuarios(db, role=role, is_active=is_active, order_by=order_by)
 
 # 2. OBTENER USUARIO POR ID
 @router.get("/{usuario_id}", response_model=UserResponse, status_code=status.HTTP_200_OK)
-def obtener_usuario(usuario_id: int, db: Session = Depends(get_db)):
+def obtener_usuario(usuario_id: int, db: Session = Depends(get_db), _current_user=Depends(get_current_active_user)):
     usuario = user_service.obtener_usuario_por_id(db, usuario_id)
     if not usuario:
         raise HTTPException(
